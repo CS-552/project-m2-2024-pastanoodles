@@ -203,8 +203,7 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         ###############################################################
         # TODO: Please implement your customized forward pass here
         # =============================================================
-        
-        output_dict = 
+        raise NotImplementedError
         ###############################################################
 
         return output_dict
@@ -283,13 +282,12 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         Computes the mcqa prediction of the given question.
 
         Args:
-            batch (`list` of `dict`):
-                A list of dictionaries containing the input mcqa data for the DPO model.
+            batch (`dict` of `list`):
+                A dictionary containing the input mcqa data for the DPO model.
                 The data format is as follows:
                 {
-                    "question": str,
-                    "choices": List[str],
-                    "answer": str,
+                    "question": List[str], each <str> contains the question body and the choices
+                    "answer": List[str], each <str> is a single letter representing the correct answer
                 }
             tokenizer (`PreTrainedTokenizerBase`): The tokenizer used to tokenize the input questions.
         Returns:
@@ -469,7 +467,7 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
         past_key_values=None,
         attention_mask=None,
         **kwargs,
-    ):
+        ):
         r"""
         Applies a forward pass to the wrapped model and returns the output from the model.
 
@@ -496,12 +494,25 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
 
         ouput_dict = {}
 
-        ###############################################################
+        ##############################################################  #
         # TODO: Please implement your customized forward pass here
         # =============================================================
-        raise NotImplementedError
-        ###############################################################
+        outputs = self.transformer_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
 
+        # Extraire les logits et les hidden_states des sorties
+        output_dict = {}
+        logits = outputs.logits
+        hidden_states = outputs.hidden_states
+
+        # Ajouter les sorties au dictionnaire de sortie
+        output_dict['logits'] = logits
+        output_dict['hidden_states'] = hidden_states
+
+        ###############################################################
         return ouput_dict
 
     def get_logprobs(self, batch, tokenizer):
@@ -529,7 +540,38 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
         ###############################################################
         # TODO: Please implement your customized logprob computation here
         # =============================================================
-        raise NotImplementedError
+        chosen_logps = []
+        rejected_logps = []
+
+        for prompt, chosen, rejected in zip(batch['prompt'], batch['chosen'], batch['rejected']):
+            # Tokenize the input sequences
+            prompt_tokens = tokenizer(prompt, return_tensors='pt')
+            chosen_tokens = tokenizer(chosen, return_tensors='pt')
+            rejected_tokens = tokenizer(rejected, return_tensors='pt')
+
+            # Concatenate prompt with chosen and rejected responses
+            chosen_input_ids = torch.cat((prompt_tokens['input_ids'], chosen_tokens['input_ids'][:, 1:]), dim=1)
+            rejected_input_ids = torch.cat((prompt_tokens['input_ids'], rejected_tokens['input_ids'][:, 1:]), dim=1)
+
+            # Get model outputs
+            with torch.no_grad():
+                chosen_outputs = self.transformer_model(input_ids=chosen_input_ids, attention_mask=chosen_input_ids.ne(tokenizer.pad_token_id))
+                rejected_outputs = self.transformer_model(input_ids=rejected_input_ids, attention_mask=rejected_input_ids.ne(tokenizer.pad_token_id))
+
+            # Calculate log probabilities
+            chosen_logp = F.log_softmax(chosen_outputs.logits, dim=-1)
+            rejected_logp = F.log_softmax(rejected_outputs.logits, dim=-1)
+
+            # Sum log probabilities for the chosen and rejected sequences
+            chosen_logp_sum = torch.sum(chosen_logp[:, :-1].gather(2, chosen_input_ids[:, 1:].unsqueeze(-1)).squeeze(-1), dim=1)
+            rejected_logp_sum = torch.sum(rejected_logp[:, :-1].gather(2, rejected_input_ids[:, 1:].unsqueeze(-1)).squeeze(-1), dim=1)
+
+            chosen_logps.append(chosen_logp_sum)
+            rejected_logps.append(rejected_logp_sum)
+
+        chosen_logps = torch.cat(chosen_logps)
+        rejected_logps = torch.cat(rejected_logps)
+
         ###############################################################
 
         return chosen_logps, rejected_logps
@@ -567,23 +609,33 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
         # TODO: Please implement the dpo loss function to compute the rewards
         # You need to return one reward score for each chosen and rejected response.
         # ======================================================================
-        raise NotImplementedError
-        ########################################################################
+
+        # Implementing the DPO reward function as per the reference paper
+        # Reward calculation using the log probabilities
+        delta_logp = policy_chosen_logps - policy_rejected_logps
+        delta_ref_logp = reference_chosen_logps - reference_rejected_logps
+
+        rewards = delta_logp - delta_ref_logp
+        chosen_rewards = rewards.clamp(min=0)
+        rejected_rewards = (-rewards).clamp(min=0)
+
+        output_dict['chosen_rewards'] = chosen_rewards
+        output_dict['rejected_rewards'] = rejected_rewards
 
         return output_dict
+        ########################################################################
 
     def prediction_step_mcqa(self, batch, tokenizer):
         """
         Computes the mcqa prediction of the given question.
 
         Args:
-            batch (`list` of `dict`):
-                A list of dictionaries containing the input mcqa data for the DPO model.
+            batch (`dict` of `list`):
+                A dictionary containing the input mcqa data for the DPO model.
                 The data format is as follows:
                 {
-                    "question": str,
-                    "choices": List[str],
-                    "answer": str,
+                    "question": List[str], each <str> contains the question body and the choices
+                    "answer": List[str], each <str> is a single letter representing the correct answer
                 }
             tokenizer (`PreTrainedTokenizerBase`): The tokenizer used to tokenize the input questions.
         Returns:
@@ -596,7 +648,28 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
         # ======================================================================
         # You need to return one letter prediction for each question.
         # ======================================================================
-        raise NotImplementedError
+        output_dict = {"preds": []}
+
+        for question in batch['question']:
+            # Tokenize the question
+            inputs = tokenizer(question, return_tensors='pt', padding=True, truncation=True)
+            
+            # Pass the inputs through the model
+            with torch.no_grad():
+                outputs = self.transformer_model(**inputs)
+            
+            # Get the logits from the model outputs
+            logits = outputs.logits
+
+            # Compute the predicted choice by taking the argmax of the logits
+            predicted_choice_index = torch.argmax(logits, dim=-1).item()
+
+            # Map the predicted index to the corresponding letter
+            predicted_choice = chr(predicted_choice_index + ord('A'))  # Assuming choices are labeled A, B, C, D, etc.
+
+            # Append the predicted choice to the output dictionary
+            output_dict['preds'].append(predicted_choice)
+
         ########################################################################
 
         return output_dict
