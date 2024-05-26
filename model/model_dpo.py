@@ -467,7 +467,7 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
         past_key_values=None,
         attention_mask=None,
         **kwargs,
-        ):
+    ):
         r"""
         Applies a forward pass to the wrapped model and returns the output from the model.
 
@@ -494,7 +494,7 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
 
         ouput_dict = {}
 
-        ##############################################################  #
+        ###############################################################
         # TODO: Please implement your customized forward pass here
         # =============================================================
         outputs = self.transformer_model(
