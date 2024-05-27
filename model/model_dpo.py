@@ -203,10 +203,26 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         ###############################################################
         # TODO: Please implement your customized forward pass here
         # =============================================================
-        raise NotImplementedError
-        ###############################################################
+        kwargs["output_hidden_states"] = True
+        kwargs["past_key_values"] = past_key_values
+
+        if self.is_peft_model and self.pretrained_model.active_peft_config.peft_type == "PREFIX_TUNING":
+            kwargs.pop("past_key_values")
+
+        output_dict = {}
+
+        outputs = self.pretrained_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+
+        output_dict["logits"] = outputs.logits
+        output_dict["hidden_states"] = outputs.hidden_states
 
         return output_dict
+        ###############################################################
+
 
     def get_logprobs(self, batch, tokenizer):
         """
@@ -233,10 +249,29 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         ###############################################################
         # TODO: Please implement your customized logprob computation here
         # =============================================================
-        raise NotImplementedError
-        ###############################################################
+        chosen_logps = []
+        rejected_logps = []
+
+        for prompt, chosen, rejected in zip(batch["prompt"], batch["chosen"], batch["rejected"]):
+            inputs = tokenizer(prompt, return_tensors="pt")
+            with torch.no_grad():
+                outputs = self.pretrained_model(**inputs, labels=inputs["input_ids"])
+            chosen_inputs = tokenizer(chosen, return_tensors="pt")
+            with torch.no_grad():
+                chosen_outputs = self.pretrained_model(**chosen_inputs, labels=chosen_inputs["input_ids"])
+            rejected_inputs = tokenizer(rejected, return_tensors="pt")
+            with torch.no_grad():
+                rejected_outputs = self.pretrained_model(**rejected_inputs, labels=rejected_inputs["input_ids"])
+
+            chosen_logps.append(F.log_softmax(chosen_outputs.logits, dim=-1))
+            rejected_logps.append(F.log_softmax(rejected_outputs.logits, dim=-1))
+
+        chosen_logps = torch.stack(chosen_logps)
+        rejected_logps = torch.stack(rejected_logps)
 
         return chosen_logps, rejected_logps
+        ###############################################################
+
 
     def prediction_step_reward(
         self,
@@ -272,7 +307,13 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         # ======================================================================
         # You need to return one reward score for each chosen and rejected response.
         # ======================================================================
-        raise NotImplementedError
+        chosen_rewards = policy_chosen_logps - reference_chosen_logps
+        rejected_rewards = policy_rejected_logps - reference_rejected_logps
+
+        output_dict["chosen_rewards"] = chosen_rewards
+        output_dict["rejected_rewards"] = rejected_rewards
+
+        return output_dict
         ########################################################################
 
         return output_dict
@@ -300,10 +341,16 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         # ======================================================================
         # You need to return one letter prediction for each question.
         # ======================================================================
-        raise NotImplementedError
-        ########################################################################
+
+        for question in batch["question"]:
+            inputs = tokenizer(question, return_tensors="pt")
+            with torch.no_grad():
+                outputs = self.pretrained_model.generate(**inputs)
+            preds = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            output_dict["preds"].append(preds.strip())
 
         return output_dict
+        ########################################################################
 
 class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
     r"""
@@ -467,7 +514,7 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
         past_key_values=None,
         attention_mask=None,
         **kwargs,
-    ):
+        ):
         r"""
         Applies a forward pass to the wrapped model and returns the output from the model.
 
@@ -494,7 +541,7 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
 
         ouput_dict = {}
 
-        ###############################################################
+        ##############################################################  #
         # TODO: Please implement your customized forward pass here
         # =============================================================
         outputs = self.transformer_model(
