@@ -5,3 +5,4 @@ data/computer_science_dataset_10k.json filter=lfs diff=lfs merge=lfs -text
 data/DPO_test_dataset.json filter=lfs diff=lfs merge=lfs -text
 data/DPO_train_dataset.json filter=lfs diff=lfs merge=lfs -text
 data/DPO_val_dataset.json filter=lfs diff=lfs merge=lfs -text
+data/orca_math_dpo.json filter=lfs diff=lfs merge=lfs -text
