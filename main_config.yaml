@@ -1,9 +1,9 @@
 "team_name": "pastanoodles" # team name
 "eval_method": ["reward"] # mcqa, reward, rag, compression
 "task_type": "causal_lm" # causal_lm, seq2seq
-"policy_model_path": "./checkpoints/checkpoint-5400" # path to the final checkpoint
+"policy_model_path": "marcosciala/pastanoodles_dpo" # path to the final checkpoint
 "reference_model_path": "microsoft/phi-2" # The repo id of pretrained reference model
-"quantized_policy_model_path": "./checkpoints/checkpoint-5400" # path to the final quantized checkpoint
+"quantized_policy_model_path": "marcosciala/pastanoodles_dpo" # path to the final quantized checkpoint
 "rag_policy_model_path": "./checkpoints/best_model_rag/" # Your path to the final RAG checkpoint
 "test_data_path": "./data/dpo_preference_example.jsonl" # path to the test data
 "dpo_model_args": null # Put any model arguments required to load your DPO model below
