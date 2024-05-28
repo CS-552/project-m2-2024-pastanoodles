@@ -320,11 +320,16 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         # ======================================================================
         # You need to return one reward score for each chosen and rejected response.
         # ======================================================================
-        chosen_rewards = policy_chosen_logps - reference_chosen_logps
-        rejected_rewards = policy_rejected_logps - reference_rejected_logps
+        beta=0.1
+        #chosen_rewards = policy_chosen_logps - reference_chosen_logps
+        #rejected_rewards = policy_rejected_logps - reference_rejected_logps
 
-        output_dict["chosen_rewards"] = chosen_rewards
-        output_dict["rejected_rewards"] = rejected_rewards
+        #output_dict["chosen_rewards"] = chosen_rewards
+        #output_dict["rejected_rewards"] = rejected_rewards
+        output_dict = {
+        "chosen_rewards": [beta*(policy_chosen-ref_chosen) for policy_chosen, ref_chosen in zip(policy_chosen_logps, reference_chosen_logps)],
+        "rejected_rewards": [beta*(policy_rejected-ref_rejected) for policy_rejected, ref_rejected in zip(policy_rejected_logps, reference_rejected_logps)]
+        }
 
         return output_dict
         ########################################################################
