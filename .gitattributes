@@ -1,3 +1,4 @@
 data/dpo_dataset.json filter=lfs diff=lfs merge=lfs -text
 M1_dataset_filtered_6_prompts.json filter=lfs diff=lfs merge=lfs -text
 checkpoints/** filter=lfs diff=lfs merge=lfs -text
+data/computer_science_dataset_10k.json filter=lfs diff=lfs merge=lfs -text
