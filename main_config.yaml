@@ -5,7 +5,7 @@
 "reference_model_path": "microsoft/phi-2" # The repo id of pretrained reference model
 "quantized_policy_model_path": "./checkpoints/checkpoint-5400" # path to the final quantized checkpoint
 "rag_policy_model_path": "./checkpoints/best_model_rag/" # Your path to the final RAG checkpoint
-"test_data_path": "./data/data_preference_example.jsonl" # path to the test data
+"test_data_path": "./data/dpo_preference_example.jsonl" # path to the test data
 "dpo_model_args": null # Put any model arguments required to load your DPO model below
 "rag_model_args": # Put any model arguments required to load your rag model below
   "encoder_model_path": "facebook/bart-large"
