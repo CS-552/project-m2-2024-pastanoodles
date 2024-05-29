@@ -198,28 +198,23 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         if self.is_peft_model and self.pretrained_model.active_peft_config.peft_type == "PREFIX_TUNING":
             kwargs.pop("past_key_values")
 
-        output_dict = {}
+        output_dict = self.pretrained_model(input_ids=input_ids, 
+                                    past_key_values=past_key_values,
+                                    attention_mask=attention_mask)
 
         ###############################################################
         # TODO: Please implement your customized forward pass here
         # =============================================================
-        kwargs["output_hidden_states"] = True
-        kwargs["past_key_values"] = past_key_values
+        # output_dict = {}
 
-        if self.is_peft_model and self.pretrained_model.active_peft_config.peft_type == "PREFIX_TUNING":
-            kwargs.pop("past_key_values")
-
-        output_dict = {}
-
-        outputs = self.pretrained_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            **kwargs
-        )
-
-        output_dict["logits"] = outputs.logits
-        output_dict["hidden_states"] = outputs.hidden_states
-
+        # outputs = self.pretrained_model(
+        #     input_ids=input_ids,
+        #     attention_mask=attention_mask,
+        #     **kwargs
+        # )
+        
+        # output_dict["logits"] = outputs.logits
+        # output_dict["hidden_states"] = outputs.hidden_states
         return output_dict
         ###############################################################
 
@@ -249,32 +244,39 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         ###############################################################
         # TODO: Please implement your customized logprob computation here
         # =============================================================
+        prompts = batch['prompt']
+        chosen_responses = batch['chosen']
+        rejected_responses = batch['rejected']
+
         chosen_logps = []
         rejected_logps = []
 
-        for prompt, chosen, rejected in zip(batch["prompt"], batch["chosen"], batch["rejected"]):
-            chosen_input = prompt + chosen
-            rejected_input = prompt + rejected
+        for prompt, chosen, rejected in zip(prompts, chosen_responses, rejected_responses):
+            chosen_input = chosen
+            rejected_input = rejected
+            
+            chosen_tokens = tokenizer(chosen_input, return_tensors='pt')
+            rejected_tokens = tokenizer(rejected_input, return_tensors='pt')
 
-            chosen_tokens = tokenizer(chosen_input, return_tensors="pt")
-            rejected_tokens = tokenizer(rejected_input, return_tensors="pt")
+            # Move tokens to the appropriate device
+            device = next(self.pretrained_model.parameters()).device
+            chosen_tokens = {key: value.to(device) for key, value in chosen_tokens.items()}
+            rejected_tokens = {key: value.to(device) for key, value in rejected_tokens.items()}
 
-            #inputs = tokenizer(prompt, return_tensors="pt")
-
-            chosen_tokens = {k: v for k, v in chosen_tokens.items()}
-            rejected_tokens = {k: v for k, v in rejected_tokens.items()}
             with torch.no_grad():
-                chosen_outputs = self.pretrained_model(**chosen_tokens)
-                rejected_outputs = self.pretrained_model(**rejected_tokens)
+                chosen_outputs = self.forward(**chosen_tokens)
+                rejected_outputs = self.forward(**rejected_tokens)
+            
+            chosen_log_probs = F.log_softmax(chosen_outputs.logits, dim=-1)
+            rejected_log_probs = F.log_softmax(rejected_outputs.logits, dim=-1)
 
-            chosen_logprobs = F.log_softmax(chosen_outputs.logits, dim=-1)
-            rejected_logprobs = F.log_softmax(rejected_outputs.logits, dim=-1)
+            # Get the log probabilities of the chosen tokens
+            chosen_token_ids = chosen_tokens['input_ids']
+            chosen_logp = chosen_log_probs.gather(2, chosen_token_ids.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
 
-            chosen_token_ids = chosen_tokens["input_ids"]
-            chosen_logp = chosen_logprobs.gather(2, chosen_token_ids.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
-
-            rejected_token_ids = rejected_tokens["input_ids"]
-            rejected_logp = rejected_logprobs.gather(2, rejected_token_ids.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
+            # Get the log probabilities of the rejected tokens
+            rejected_token_ids = rejected_tokens['input_ids']
+            rejected_logp = rejected_log_probs.gather(2, rejected_token_ids.unsqueeze(-1)).squeeze(-1).sum(dim=-1)
 
             chosen_logps.append(chosen_logp)
             rejected_logps.append(rejected_logp)
@@ -282,9 +284,8 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         chosen_logps = torch.stack(chosen_logps)
         rejected_logps = torch.stack(rejected_logps)
 
-        return chosen_logps, rejected_logps
+        return chosen_logps.cpu(), rejected_logps.cpu()
         ###############################################################
-
 
     def prediction_step_reward(
         self,
@@ -310,9 +311,10 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
             output_dict (`dict`):
                 A dictionary containing the reward scores of the chosen and rejected responses.
         """
+        beta=0.1
         output_dict = {
-            "chosen_rewards": [],
-            "rejected_rewards": []
+            "chosen_rewards": [beta*(policy_chosen-ref_chosen) for policy_chosen, ref_chosen in zip(policy_chosen_logps, reference_chosen_logps)],
+            "rejected_rewards": [beta*(policy_rejected-ref_rejected) for policy_rejected, ref_rejected in zip(policy_rejected_logps, reference_rejected_logps)]
         }
 
         ########################################################################
@@ -320,13 +322,6 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         # ======================================================================
         # You need to return one reward score for each chosen and rejected response.
         # ======================================================================
-        beta = 0.1
-        output_dict = {
-        "chosen_rewards": [beta*(policy_chosen-ref_chosen) for policy_chosen, ref_chosen in zip(policy_chosen_logps, reference_chosen_logps)],
-        "rejected_rewards": [beta*(policy_rejected-ref_rejected) for policy_rejected, ref_rejected in zip(policy_rejected_logps, reference_rejected_logps)]
-        }
-
-        return output_dict
         ########################################################################
 
         return output_dict
@@ -355,14 +350,14 @@ class AutoDPOModelForCausalLM(PreTrainedModelWrapper):
         # You need to return one letter prediction for each question.
         # ======================================================================
 
-        for question in batch["question"]:
-            inputs = tokenizer(question, return_tensors="pt")
-            with torch.no_grad():
-                outputs = self.pretrained_model.generate(**inputs)
-            preds = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            output_dict["preds"].append(preds.strip())
+        # for question in batch["question"]:
+        #     inputs = tokenizer(question, return_tensors="pt")
+        #     with torch.no_grad():
+        #         outputs = self.pretrained_model.generate(**inputs)
+        #     preds = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        #     output_dict["preds"].append(preds.strip())
 
-        return output_dict
+        # return output_dict
         ########################################################################
 
 class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
@@ -440,7 +435,6 @@ class AutoDPOModelForSeq2SeqLM(PreTrainedModelWrapper):
             pretrained_model_state_dict = self.pretrained_model.state_dict(*args, **kwargs)
         else:
             pretrained_model_state_dict = {}
-            #pretrained_model_state_dict = self.pretrained_model.state_dict(*args, **kwargs) # added this
 
         ###########################################################################################
         # TODO (Optional): Please uncomment the following lines to initialize your custom module
